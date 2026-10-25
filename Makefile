@@ -3,6 +3,7 @@
 #
 # Usage: make TOOLCHAIN_PREFIX=/path/to/mingw/bin/ all payload
 
+$(shell mkdir -p build)
 TOOLCHAIN_PREFIX ?=
 CC64  := $(TOOLCHAIN_PREFIX)x86_64-w64-mingw32-gcc
 LD64  := $(TOOLCHAIN_PREFIX)x86_64-w64-mingw32-ld
