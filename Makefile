@@ -13,9 +13,14 @@ LD32  := $(TOOLCHAIN_PREFIX)i686-w64-mingw32-gcc
 OBJCOPY32 := $(TOOLCHAIN_PREFIX)i686-w64-mingw32-objcopy
 NASM  := $(TOOLCHAIN_PREFIX)nasm
 
+# NOTE: no -fpic! On mingw/PE -fpic is a no-op codegen-wise but forces
+# .refptr indirection for cross-object externs: the C would then read/write
+# link-time image-relative ADDRESSES (~0xfe0 = low linear memory) while the
+# asm side reads [rip+...] inside the staging copy — the two sides never
+# touch the same memory (caused the "GDTR loaded 0/0" bug).
 CFLAGS64 := -Os -g0 -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector \
             -fno-asynchronous-unwind-tables -fno-unwind-tables \
-            -mno-red-zone -fshort-wchar -fpic -Wall -Wextra
+            -mno-red-zone -fshort-wchar -Wall -Wextra
 CFLAGS32 := -Os -g0 -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector \
             -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-pic \
             -fshort-wchar -Wall -Wextra -Wno-unused-parameter
@@ -26,11 +31,17 @@ all: BOOTIA32.EFI
 build/payload64_entry.o: payload64_entry.asm
 	$(NASM) -f win64 -o $@ $<
 
-build/payload64.o: payload64.c efi32.h
-	$(CC64) $(CFLAGS64) -c -o $@ $<
+build/payload64.o: payload64.c efi32.h efi64.h bridge.h fake64.c
+	$(CC64) $(CFLAGS64) -c -o $@ payload64.c
 
-build/payload64.elf: build/payload64_entry.o build/payload64.o payload64.ld
-	$(LD64) -T payload64.ld -o $@ build/payload64_entry.o build/payload64.o \
+build/fake64.o: fake64.c efi32.h efi64.h bridge.h
+	$(CC64) $(CFLAGS64) -c -o $@ fake64.c
+
+build/thunk64.o: thunk64.asm bridge.h
+	$(NASM) -f win64 -o $@ $<
+
+build/payload64.elf: build/payload64_entry.o build/payload64.o build/fake64.o build/thunk64.o payload64.ld
+	$(LD64) -T payload64.ld -o $@ build/payload64_entry.o build/payload64.o build/fake64.o build/thunk64.o \
 	    --build-id=none -static -nostdlib
 
 build/payload64.bin: build/payload64.elf

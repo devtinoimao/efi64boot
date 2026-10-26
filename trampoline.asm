@@ -26,13 +26,49 @@ start:
                                ; page-fault loop once PG re-enabled)
     cli                        ; no interrupts across the mode switch
 
-    ; ---- debug: 'p' marker helper inlined below ----
+    ; ---- M2: capture 32-bit firmware state into BOOT_PARAMS ------
+    ; MUST happen BEFORE we lgdt the bridge GDT below — the whole point
+    ; is to save the FIRMWARE GDT/IDT/CRs/segments, and at this point
+    ; the GDTR still holds the firmware tables. (Earlier this block sat
+    ; after the bridge lgdt, so saved_gdtr32 ended up being the bridge
+    ; GDT and the thunk's far return to the 32-bit CS was unresolvable:
+    ; #GP at the lret, double fault, reset.)
+    ;
+    ; sgdt in 32-bit mode writes a packed 6-byte blob: limit(2)+base(4).
+    ; BOOT_PARAMS offsets 24.. :
+    ;   +24  gdtr blob (6 bytes)   +32  idtr blob (6 bytes)
+    ;   +40 cr0  +44 cr3  +48 cr4
+    ;   +52 cs  +56 ds  +60 es  +64 ss  +68 fs  +72 gs  +76 esp
+    sgdt [esi + 24]
+    sidt [esi + 32]
+    mov  eax, cr0
+    mov  [esi + 40], eax
+    mov  eax, cr3
+    mov  [esi + 44], eax
+    mov  eax, cr4
+    mov  [esi + 48], eax
+    mov  ax, cs
+    mov  [esi + 52], eax
+    mov  ax, ds
+    mov  [esi + 56], eax
+    mov  ax, es
+    mov  [esi + 60], eax
+    mov  ax, ss
+    mov  [esi + 64], eax
+    mov  ax, fs
+    mov  [esi + 68], eax
+    mov  ax, gs
+    mov  [esi + 72], eax
+    mov  [esi + 76], esp
 
     ; ---- runtime GDT descriptor on the stack --------------------
     ; [ebp-8] = {word limit, dword base}; use eax scratch
     mov  eax, [esi + 16]       ; gdt_phys
     sub  esp, 8
-    mov  word [esp], 0x17      ; limit = 23 (3 entries)
+    mov  word [esp], 0x27      ; limit = 39 (5 entries: null, code64,
+                               ; data, 32-bit compat code @0x18, and
+                               ; another 32-bit code @0x20 for the
+                               ; in_compat -> in_32bit 4+4 retf)
     mov  [esp + 2], eax        ; base
     lgdt [esp]
     add  esp, 8

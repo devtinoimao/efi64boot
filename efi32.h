@@ -37,7 +37,44 @@ typedef struct {
     void *GetMemoryMap;
     void *AllocatePool;
     void *FreePool;
-    /* ... spec continues; unnamed tail follows in memory ... */
+    void *CreateEvent;
+    void *SetTimer;
+    void *WaitForEvent;
+    void *SignalEvent;
+    void *CloseEvent;
+    void *CheckEvent;
+    void *InstallProtocolInterface;
+    void *ReinstallProtocolInterface;
+    void *UninstallProtocolInterface;
+    void *HandleProtocol;
+    void *Reserved;
+    void *RegisterProtocolNotify;
+    void *LocateHandle;
+    void *LocateDevicePath;
+    void *InstallConfigurationTable;
+    void *LoadImage;
+    void *StartImage;
+    void *Exit;
+    void *UnloadImage;
+    void *ExitBootServices;
+    void *GetNextMonotonicCount;
+    void *Stall;
+    void *SetWatchdogTimer;
+    void *ConnectController;
+    void *DisconnectController;
+    void *OpenProtocol;
+    void *CloseProtocol;
+    void *OpenProtocolInformation;
+    void *ProtocolsPerHandle;
+    void *LocateHandleBuffer;
+    void *LocateProtocol;
+    void *InstallMultipleProtocolInterfaces;
+    void *UninstallMultipleProtocolInterfaces;
+    void *CalculateCrc32;
+    void *CopyMem;
+    void *SetMem;
+    void *CreateEventEx;
+    /* spec tail continues but we stop here */
 } EFI_BOOT_SERVICES;
 
 typedef struct {

@@ -33,7 +33,9 @@ extern const uint32_t payload64_size;
 extern const uint8_t  trampoline_start[];
 extern const uint32_t trampoline_size;
 
-/* Layout handed to the trampoline (must stay in sync with trampoline.asm) */
+/* Layout handed to the trampoline (must stay in sync with trampoline.asm).
+ * M2: the trampoline captures the 32-bit firmware CPU state pre-switch so
+ * the 64-bit thunk layer can drop back down for service calls. */
 typedef struct {
     uint32_t pml4_phys;      /* PML4 table, 4K aligned            */
     uint32_t payload_phys;   /* 64-bit payload entry base         */
@@ -41,6 +43,15 @@ typedef struct {
     uint32_t stack_top;      /* 64-bit stack (grows down)         */
     uint32_t gdt_phys;       /* 64-bit GDT                        */
     uint32_t serial_ok;      /* out: payload sets 0x600D when done */
+    /* M2 state capture (filled by trampoline pre-switch) */
+    uint32_t gdtr_limit;     /* 32-bit GDTR limit                 */
+    uint32_t gdtr_base;      /* 32-bit GDTR base (<4GiB)          */
+    uint32_t idtr_limit;
+    uint32_t idtr_base;
+    uint32_t cr0_32, cr3_32, cr4_32;
+    uint32_t cs32, ds32, es32, ss32, fs32, gs32;
+    uint32_t esp32;          /* 32-bit stack pointer at capture   */
+    uint32_t bsv32;          /* EFI_BOOT_SERVICES* (32-bit)       */
 } BOOT_PARAMS;
 
 static EFI_SYSTEM_TABLE *gST;
@@ -173,12 +184,21 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
         g[0] = 0;
         g[1] = 0x00AF9A000000FFFFULL; /* 64-bit code, L=1, present, ring0 */
         g[2] = 0x00CF92000000FFFFULL; /* data */
+        g[3] = 0x00CF9A000000FFFFULL; /* 32-bit compat code (L=0, D=1) at
+                                         selector 0x18 — target of the
+                                         thunk's long→compat far return
+                                         (plan B2) */
+        g[4] = 0x00CF9A000000FFFFULL; /* 32-bit code again (L=0, D=1) at
+                                         selector 0x20 — target of the in_compat
+                                         4+4 retf to in_32bit (same bridge GDT,
+                                         no firmware-GDT swap needed) */
     }
 
     params->pml4_phys    = (uint32_t)(uint32_t *)pml4;
     params->stack_top    = (uint32_t)(region + 0x1F000);
     params->gdt_phys     = (uint32_t)(uint32_t *)gdt64;
     params->serial_ok    = 0;
+    params->bsv32        = (uint32_t)(uint32_t *)gBS;
 
     /* 3. Copy the 64-bit payload and the 32-bit trampoline into the
      *    staging region. Trampoline sits at region+0x05000 and is entered
