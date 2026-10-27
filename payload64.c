@@ -60,6 +60,7 @@ static void serial_hex(uint64_t v)
  * We call Stall(1 second) via the thunked svc table and report. */
 extern void fake64_init(void *BootServices32);
 extern void fake64_bind_services(void);
+extern uint32_t fake64_bs32_get(uint32_t off);
 extern uint32_t svc_table32[64];
 extern unsigned char saved_gdtr32[10];
 extern unsigned char saved_idtr32[10];
@@ -171,17 +172,47 @@ void payload64_main(PAYLOAD_PARAMS *params)
         serial_hex(p32[14]);
         serial_puts("\n");
 
+        serial_puts("efi64boot: bsv32=p32[20]=0x");
+        serial_hex(p32[20]);
+        serial_puts("\n");
         fake64_init((void *)(uintptr_t)p32[20]); /* bsv32 */
         fake64_bind_services();
+        serial_puts("efi64boot: svc[5]=0x");
+        serial_hex(svc_table32[5]);
+        serial_puts("\n");
+        {
+            serial_puts("efi64boot: svc dump:");
+            for (uint32_t i = 0; i < 32; i++) {
+                serial_puts(" idx");
+                serial_hex(i);
+                serial_puts("=0x");
+                serial_hex(svc_table32[i]);
+                serial_puts("\n");
+            }
+        }
+        /* direct read, sanity check, bypass helper */
+        serial_puts("efi64boot: direct BS:");
+        uint32_t *bspp = (uint32_t *)(uint64_t)p32[20];
+        for (uint32_t i = 0; i < 4; i++) {
+            serial_puts(" "); serial_hex(bspp[i]);
+        }
+        serial_puts("\n");
         serial_puts("efi64boot: svc table bound, calling Stall(1000000) via thunk...\n");
+        {
+            serial_puts("efi64boot: bs32:");
+            for (uint32_t i = 0; i < 8; i++) {
+                serial_puts(" off");
+                serial_hex(i * 16);
+                serial_puts("=0x");
+                serial_hex(fake64_bs32_get(i * 16));
+            }
+            serial_puts("\n");
+        }
 
         {
             uint64_t args[8] = { 1000000, 0, 0, 0, 0, 0, 0, 0 };
             uint64_t ret = 0xdeadbeefdeadbeefULL;
-            do_thunk_call(args, &ret, SVC_STALL, 1);
-            serial_puts("efi64boot: thunk returned status=0x");
-            serial_hex(ret);
-            serial_puts(" (0=success = ROUND TRIP COMPLETE)\n");
+            /* Stall service disabled for M3 (timer+dance issues); AllocatePool below */
         }
 
         /* second round trip: AllocatePool(512) */

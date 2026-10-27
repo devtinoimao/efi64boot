@@ -338,6 +338,7 @@ in_32bit:
     CP_CHAR 'B'
     mov  esp, [ebp + ctx - in_32bit + BRIDGE.scratch_top]
     CP_CHAR 'X'
+    sti                     ; let firmware Stall/t timers run
     ; cdecl: push args in reverse
     mov  ecx, [ebp + ctx - in_32bit + BRIDGE.nargs]
 .push_args:

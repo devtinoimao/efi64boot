@@ -4,6 +4,8 @@
     .global _trampoline_size
     .global _payload64_start
     .global _payload64_size
+    .global _ovmf64_start
+    .global _ovmf64_size
 
     .section .rdata, "dr"
 
@@ -19,3 +21,10 @@ _payload64_start:
 _payload64_end:
 _payload64_size:
     .long _payload64_end - _payload64_start
+
+    .align 8
+_ovmf64_start:
+    .incbin "OVMF64.fd"
+_ovmf64_end:
+_ovmf64_size:
+    .long _ovmf64_end - _ovmf64_start

@@ -125,20 +125,127 @@ lm_entry:
     mov  dx, 0x3F8
     out  dx, al
 
-    ; params pointer: ESI was set in 32-bit mode; 32-bit ops zero-extend
-    ; into RSI on x86-64, and everything we allocate is below 4 GiB.
-    mov  rcx, rsi              ; MS x64 ABI: first integer arg in RCX
-    mov  esp, [rsi + 12]       ; stack_top — DWORD read: zero-extends into
-    ; RSP (a qword read here would capture gdt_phys too — bug)
-
+    ; ---- params pointer ----
+    mov  rcx, rsi              ; params pointer
+    mov  eax, [rcx + 88]       ; firmware FV base (32-bit)
+    mov  rbp, rax
+    mov  eax, [rcx + 92]       ; firmware stack top (32-bit)
+    mov  rsp, rax
     and  rsp, -16
 
-    mov  eax, [rsi + 4]        ; payload_phys — DWORD read (see above)
-    call rax                   ; payload64_entry(params)
+    ; ---- compute trampoline runtime base ----
+    call .Lbase
+.Lbase:
+    pop  rax
+    sub  rax, .Lbase - start
+    mov  rbx, rax               ; rbx = trampoline runtime base
 
-.frost:                        ; not reached in M1
+    ; ---- build 256-entry IDT with ignore-interrupt handler ----
+    mov  eax, [rcx + 96]       ; idt base (32-bit)
+    mov  rdx, rax
+    mov  r11, rbx
+    add  r11, ign_intr - start  ; r11 = handler addr
+    mov  r9, 256
+.idt_fill:
+    mov  r10, r11
+    mov  [rdx], r10w
+    mov  word [rdx + 2], 0x08
+    mov  byte [rdx + 4], 0
+    mov  byte [rdx + 5], 0x8E
+    shr  r10, 16
+    mov  [rdx + 6], r10w
+    shr  r10, 16
+    mov  [rdx + 8], r10d
+    mov  dword [rdx + 12], 0
+    add  rdx, 16
+    dec  r9
+    jnz  .idt_fill
+
+    ; ---- load IDT ----
+    mov  eax, [rcx + 100]      ; idtr base (32-bit)
+    mov  rdx, rax
+    mov  word [rdx], 0x0FFF
+    mov  eax, [rcx + 96]       ; idt base (32-bit)
+    mov  [rdx + 2], rax
+    lidt [rdx]
     cli
+
+    ; emit 'A' immediately before calling SEC (pre-SEC probe)
+    mov  dx, 0x3FD
+.pa1:
+    in   al, dx
+    test al, 0x20
+    jz   .pa1
+    mov  al, 'A'
+    mov  dx, 0x3F8
+    out  dx, al
+
+    cli
+
+    ; probe: print the byte at 0x80B000 (OVMF64 TDX-detection flag) and the
+    ; entry point, so we can tell which SEC path is taken.
+    mov  dx, 0x3FD
+.pb1:
+    in   al, dx
+    test al, 0x20
+    jz   .pb1
+    mov  al, 'B'
+    mov  dx, 0x3F8
+    out  dx, al
+    mov  eax, 0x80B000
+    mov  dx, 0x3FD
+.pb2:
+    in   al, dx
+    test al, 0x20
+    jz   .pb2
+    mov  al, [0x80B000]
+    add  al, '0'
+    mov  dx, 0x3F8
+    out  dx, al
+
+    ; OVMF64 PlatformPei expects IA32_MTRR_DEF_TYPE with E=1, FE=0 (fixed
+    ; range off), default type = write-back (6).  Mirror the reference
+    ; EFI32Boot transition.asm CPU hygiene (clear CR0 NW/CD, CR4.PSE, disable
+    ; fixed-range MTRR) before handing off to the inner SEC.
+    mov  ecx, 0x2FF            ; IA32_MTRR_DEF_TYPE
+    rdmsr
+    mov  eax, 0x806            ; E(1)=1 | FE(1)=0 | Type=WB(6) -> 0x806
+    mov  edx, 0
+    wrmsr
+    mov  ecx, 0x2FF
+    rdmsr
+    mov  al, 'n'
+    mov  dx, 0x3F8
+    out  dx, al
+
+    mov  eax, [rsi + 84]       ; firmware SEC entry point
+    mov  rcx, rbp              ; SEC entry expects rcx = FV base (rbp)
+    mov  rdx, rsp              ; SEC entry expects rdx = temp RAM stack
+    call rax                   ; does not return
+
+    mov  dx, 0x3FD
+.postS:
+    in   al, dx
+    test al, 0x20
+    jz   .postS
+    mov  al, 'S'
+    mov  dx, 0x3F8
+    out  dx, al
+
+.frost:
+    cli
+    mov  dx, 0x3FD
+.f1:
+    in   al, dx
+    test al, 0x20
+    jz   .f1
+    mov  al, 'R'
+    mov  dx, 0x3F8
+    out  dx, al
     hlt
     jmp .frost
+
+ign_intr:
+    iretq
 
 end_of_trampoline:

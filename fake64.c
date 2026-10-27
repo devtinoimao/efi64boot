@@ -34,6 +34,55 @@ extern uint64_t do_thunk_call(uint64_t *args, uint64_t *retout,
 
 static EFI_BOOT_SERVICES *bs32;
 
+/*
+ * The 32-bit firmware's EFI_BOOT_SERVICES table has 4-byte pointers
+ * (this is IA32 UEFI).  efi32.h's struct is compiled into BOTH the 32-bit
+ * main.c and the 64-bit fake64.c, so its member offsets are 8 bytes in
+ * fake64.c — wrong for indexing the real 32-bit table.  Use explicit
+ * byte offsets into the table instead of the struct members.
+ */
+#define BS32_RAISETPL          24
+#define BS32_RESTORETPL        28
+#define BS32_ALLOCATEPAGES     32
+#define BS32_FREEPAGES         36
+#define BS32_GETMEMORYMAP      40
+#define BS32_ALLOCATEPOOL      44
+#define BS32_FREEPOOL          48
+#define BS32_CREATEEVENT       52
+#define BS32_SETTIMER          56
+#define BS32_WAITFOREVENT      60
+#define BS32_SIGNALEVENT       64
+#define BS32_CLOSEEVENT        68
+#define BS32_CHECKEVENT        72
+#define BS32_INSTALLPROTO      76
+#define BS32_REINSTALLPROTO    80
+#define BS32_UNINSTALLPROTO    84
+#define BS32_HANDLEPROTOCOL    88
+#define BS32_RESERVED          92
+#define BS32_REGPROTONOTIFY    96
+#define BS32_LOCATEHANDLE      100
+#define BS32_LOCATEDEVICEPATH  104
+#define BS32_INSTALLCONFIGTBL  108
+#define BS32_LOADIMAGE         112
+#define BS32_STARTIMAGE        116
+#define BS32_EXIT              120
+#define BS32_UNLOADIMAGE       124
+#define BS32_EXITBOOTSERVICES  128
+#define BS32_GETNEXTMONOTONIC  132
+#define BS32_STALL             136
+#define BS32_WATCHDOG          140
+#define BS32_LOCATEPROTOCOL    144
+
+static inline uint32_t bs32_get(uint32_t off)
+{
+    return *(const uint32_t *)((const uint8_t *)bs32 + off);
+}
+
+uint32_t fake64_bs32_get(uint32_t off)
+{
+    return bs32_get(off);
+}
+
 void fake64_init(void *BootServices32)
 {
     bs32 = (EFI_BOOT_SERVICES *)BootServices32;
@@ -108,35 +157,35 @@ static uint64_t th_LocateProtocol(uint64_t p, uint64_t reg, uint64_t out)
 void fake64_bind_services(void)
 {
     svc_count = 0;
-    ADD_SVC(bs32->RaiseTPL);            /* SVC_RAISETPL */
-    ADD_SVC(bs32->RestoreTPL);          /* SVC_RESTORETPL */
-    ADD_SVC(bs32->AllocatePages);       /* SVC_ALLOCATEPAGES */
-    ADD_SVC(bs32->FreePages);
-    ADD_SVC(bs32->GetMemoryMap);
-    ADD_SVC(bs32->AllocatePool);
-    ADD_SVC(bs32->FreePool);
-    ADD_SVC(bs32->CreateEvent);
-    ADD_SVC(bs32->SetTimer);
-    ADD_SVC(bs32->WaitForEvent);
-    ADD_SVC(bs32->SignalEvent);
-    ADD_SVC(bs32->CloseEvent);
-    ADD_SVC(bs32->CheckEvent);
-    ADD_SVC(bs32->InstallProtocolInterface);
-    ADD_SVC(bs32->ReinstallProtocolInterface);
-    ADD_SVC(bs32->UninstallProtocolInterface);
-    ADD_SVC(bs32->HandleProtocol);
-    ADD_SVC(bs32->Reserved);
-    ADD_SVC(bs32->RegisterProtocolNotify);
-    ADD_SVC(bs32->LocateHandle);
-    ADD_SVC(bs32->LocateDevicePath);
-    ADD_SVC(bs32->InstallConfigurationTable);
-    ADD_SVC(bs32->LoadImage);
-    ADD_SVC(bs32->StartImage);
-    ADD_SVC(bs32->Exit);
-    ADD_SVC(bs32->UnloadImage);
-    ADD_SVC(bs32->ExitBootServices);
-    ADD_SVC(bs32->GetNextMonotonicCount);
-    ADD_SVC(bs32->Stall);
-    ADD_SVC(bs32->SetWatchdogTimer);
-    ADD_SVC(bs32->LocateProtocol);
+    ADD_SVC(bs32_get(BS32_RAISETPL));            /* SVC_RAISETPL */
+    ADD_SVC(bs32_get(BS32_RESTORETPL));          /* SVC_RESTORETPL */
+    ADD_SVC(bs32_get(BS32_ALLOCATEPAGES));       /* SVC_ALLOCATEPAGES */
+    ADD_SVC(bs32_get(BS32_FREEPAGES));
+    ADD_SVC(bs32_get(BS32_GETMEMORYMAP));
+    ADD_SVC(bs32_get(BS32_ALLOCATEPOOL));
+    ADD_SVC(bs32_get(BS32_FREEPOOL));
+    ADD_SVC(bs32_get(BS32_CREATEEVENT));
+    ADD_SVC(bs32_get(BS32_SETTIMER));
+    ADD_SVC(bs32_get(BS32_WAITFOREVENT));
+    ADD_SVC(bs32_get(BS32_SIGNALEVENT));
+    ADD_SVC(bs32_get(BS32_CLOSEEVENT));
+    ADD_SVC(bs32_get(BS32_CHECKEVENT));
+    ADD_SVC(bs32_get(BS32_INSTALLPROTO));
+    ADD_SVC(bs32_get(BS32_REINSTALLPROTO));
+    ADD_SVC(bs32_get(BS32_UNINSTALLPROTO));
+    ADD_SVC(bs32_get(BS32_HANDLEPROTOCOL));
+    ADD_SVC(bs32_get(BS32_RESERVED));
+    ADD_SVC(bs32_get(BS32_REGPROTONOTIFY));
+    ADD_SVC(bs32_get(BS32_LOCATEHANDLE));
+    ADD_SVC(bs32_get(BS32_LOCATEDEVICEPATH));
+    ADD_SVC(bs32_get(BS32_INSTALLCONFIGTBL));
+    ADD_SVC(bs32_get(BS32_LOADIMAGE));
+    ADD_SVC(bs32_get(BS32_STARTIMAGE));
+    ADD_SVC(bs32_get(BS32_EXIT));
+    ADD_SVC(bs32_get(BS32_UNLOADIMAGE));
+    ADD_SVC(bs32_get(BS32_EXITBOOTSERVICES));
+    ADD_SVC(bs32_get(BS32_GETNEXTMONOTONIC));
+    ADD_SVC(bs32_get(BS32_STALL));
+    ADD_SVC(bs32_get(BS32_WATCHDOG));
+    ADD_SVC(bs32_get(BS32_LOCATEPROTOCOL));
 }

@@ -52,7 +52,7 @@ build/trampoline.bin: trampoline.asm
 	$(NASM) -f bin -o $@ $<
 
 # ---- 32-bit PE EFI application -----------------------------------------
-build/blobs.o: blobs.S build/trampoline.bin build/payload64.bin
+build/blobs.o: blobs.S build/trampoline.bin build/payload64.bin OVMF64.fd
 	$(CC32) $(CFLAGS32) -c -o $@ $<
 
 build/main.o: main.c efi32.h
@@ -60,6 +60,9 @@ build/main.o: main.c efi32.h
 
 build/efi_crt.o: efi_crt.asm
 	$(NASM) -f win32 -o $@ $<
+
+OVMF64.fd:
+	cp /usr/share/edk2/ovmf/OVMF_CODE.fd $@
 
 BOOTIA32.EFI: build/main.o build/blobs.o build/efi_crt.o
 	$(LD32) -nostdlib -nostartfiles -nodefaultlibs \
