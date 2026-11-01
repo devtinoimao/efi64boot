@@ -273,11 +273,79 @@ lm_entry:
     jmp .frost
 
 fault_common:
-    ; Per-vector stub jumped here: the fault vector is on top of the CPU frame.
-    ; Print "XC", halt and spin (printing 'Z' repeatedly) so the crash is
-    ; visible on the serial console instead of silently triple-faulting.
+    ; Per-vector stub jumped here: the fault vector is on top of the CPU's
+    ; exception frame. Print "XC" + vector code (2 hex digits) on BOTH serial
+    ; COM1 AND the VGA text buffer, then halt (printing 'Z' repeatedly) for
+    ; investigation. This watchdog makes any #GD/#GP/#PF visible on screen.
     cli
+    mov  rbp, rsp                  ; saved frame (vector on top)
+    push rax
+    push rcx
+    push rdx
+    push r8
+    ; 'X' -> serial + VGA cell 0 bright red
+    mov  dx, 0x3FD
+.fX0: in   al, dx; test al,0x20; jz .fX0
+    mov  al, 'X'
+    mov  dx, 0x3F8; out dx, al
+    mov  byte [0xB8000], 'X'
+    mov  byte [0xB8001], 0x0C
+    ; 'C' -> serial + VGA cell 1
+    mov  dx, 0x3FD
+.fC0: in   al, dx; test al,0x20; jz .fC0
+    mov  al, 'C'
+    mov  dx, 0x3F8; out dx, al
+    mov  byte [0xB8002], 'C'
+    mov  byte [0xB8003], 0x0C
+    ; 2 hex digits of the vector
+    movzx rax, byte [rbp]
+    xor  r9, r9
+.vdig:
+    cmp   r9, 2
+    jae   .vdigdone
+    test  r9, r9
+    jnz   .vlow
+    mov   dl, al
+    shr   dl, 4
+    jmp   .vcomb
+.vlow:
+    mov   dl, al
+    and   dl, 0x0F
+.vcomb:
+    mov   r8b, dl
+    cmp   r8b, 10
+    jb    .vlt
+    add   r8b, 7
+.vlt:
+    add   r8b, '0'
+    push  r8
+    mov   dx, 0x3FD
+.vw0: in    al, dx; test al,0x20; jz .vw0
+    pop   r8
+    mov   rax, r8
+    mov   dx, 0x3F8; out dx, al
+    mov   al, r8b
+    ; VGA cell = 2 + r9*2 (cells 2, 3? actually digits at cells 2,3)
+    mov   rcx, r9
+    shl   rcx, 1
+    add   rcx, 4                  ; cell 4 and 6 (bytes 8,12)
+    mov   byte [0xB8000 + rcx], al
+    inc   rcx
+    mov   byte [0xB8000 + rcx], 0x0C
+    inc   r9
+    jmp   .vdig
+.vdigdone:
+    ; newline serial
+    mov   dx, 0x3FD
+.vn0: in   al, dx; test al, 0x20; jz .vn0
+    mov   al, '\n'
+    mov   dx, 0x3F8; out dx, al
+    pop   r8
+    pop   rdx
+    pop   rcx
+    pop   rax
 .hloop:
+    cli
     mov  dx, 0x3FD
 .hl: in   al, dx
     test al, 0x20
@@ -285,6 +353,8 @@ fault_common:
     mov  al, 'Z'
     mov  dx, 0x3F8
     out  dx, al
+    mov  byte [0xB8008], 'Z'
+    mov  byte [0xB8009], 0x0C
     hlt
     jmp  .hloop
 
