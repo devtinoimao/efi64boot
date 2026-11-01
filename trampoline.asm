@@ -140,14 +140,40 @@ lm_entry:
     sub  rax, .Lbase - start
     mov  rbx, rax               ; rbx = trampoline runtime base
 
-    ; ---- build 256-entry IDT with ignore-interrupt handler ----
+    ; ---- build 256 per-vector fault watchdog stubs (+0x1000 after IDT) ----
+    ; Each stub pushes its vector number then jmps to fault_common, so any
+    ; #GP/#PF/double-fault printed as "XC <xx>" with vector + halted loop 'Z'.
     mov  eax, [rcx + 96]       ; idt base (32-bit)
+    mov  r8, rax               ; stubs_base = idt_base + 4096
+    add  r8, 4096
+    lea  r13, [rbx + (fault_common - start)]  ; fault_common addr (tramp-based)
+    xor  r9d, r9d
+.stub_fill:
+    cmp  r9d, 256
+    jae  .stubs_done
+    mov  byte [r8 + r9*8 + 0], 0x6A
+    mov  al, r9b
+    mov  byte [r8 + r9*8 + 1], al
+    mov  byte [r8 + r9*8 + 2], 0xE9
+    lea  rax, [r8 + r9*8 + 7]
+    mov  r10, r13
+    sub  r10, rax
+    mov  [r8 + r9*8 + 3], r10d
+    mov  byte [r8 + r9*8 + 7], 0x90
+    inc  r9d
+    jmp  .stub_fill
+.stubs_done:
+    ; ---- build 256-entry IDT, each entry pointing at its fault stub ----
+    mov  eax, [rcx + 96]       ; idt base
     mov  rdx, rax
-    mov  r11, rbx
-    add  r11, ign_intr - start  ; r11 = handler addr
-    mov  r9, 256
+    xor  r9d, r9d
 .idt_fill:
-    mov  r10, r11
+    cmp  r9d, 256
+    jae  .idt_done
+    mov  rax, r8                ; r8 = stubs_base
+    mov  r10, r9
+    shl  r10, 3
+    add  r10, rax               ; stub addr
     mov  [rdx], r10w
     mov  word [rdx + 2], 0x08
     mov  byte [rdx + 4], 0
@@ -158,8 +184,9 @@ lm_entry:
     mov  [rdx + 8], r10d
     mov  dword [rdx + 12], 0
     add  rdx, 16
-    dec  r9
-    jnz  .idt_fill
+    inc  r9d
+    jmp  .idt_fill
+.idt_done:
 
     ; ---- load IDT ----
     mov  eax, [rcx + 100]      ; idtr base (32-bit)
@@ -245,7 +272,20 @@ lm_entry:
     hlt
     jmp .frost
 
-ign_intr:
-    iretq
+fault_common:
+    ; Per-vector stub jumped here: the fault vector is on top of the CPU frame.
+    ; Print "XC", halt and spin (printing 'Z' repeatedly) so the crash is
+    ; visible on the serial console instead of silently triple-faulting.
+    cli
+.hloop:
+    mov  dx, 0x3FD
+.hl: in   al, dx
+    test al, 0x20
+    jz   .hl
+    mov  al, 'Z'
+    mov  dx, 0x3F8
+    out  dx, al
+    hlt
+    jmp  .hloop
 
 end_of_trampoline:
