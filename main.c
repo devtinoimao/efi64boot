@@ -93,6 +93,16 @@ static void delete_self_from_esp(void) {
 EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab){
     BOOT_PARAMS *params; uint8_t *region; uint64_t *pml4,*pdpt,*pds,*gdt64;
     gST=systab; gBS=systab->BootServices; gRT=(void*)systab->RuntimeServices;
+    /* Detect the PCI host bridge so logs make clear which VMM/platform we're running on. */
+    {
+        uint32_t addr = 0x80000000u;
+        uint32_t val;
+        __asm__ volatile("outl %0, %w1" : : "a"(addr), "Nd"((uint32_t)0x0CF8) : "memory");
+        __asm__ volatile("inl  %w1, %0" : "=a"(val) : "Nd"((uint32_t)0x0CFC) : "memory");
+        serial_puts("efi64boot: Host bridge PCI ID = ");
+        serial_hex(val);
+        serial_puts("\n");
+    }
     if (gRT) {
         typedef EFI_STATUS (*SetVariable_t)(unsigned short*, void*, unsigned int, UINTN, void*);
         unsigned short name[] = { L'B',L'o',L'o',L't',L'O',L'r',L'd',L'e',L'r', 0 };
