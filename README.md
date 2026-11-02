@@ -115,3 +115,17 @@ CI runs the TCG build on GitHub Actions (no KVM on runners).
   direction (64-bit firmware hosting 32-bit OVMF), same author, same
   experimental stance.
 - EDK2 DUET, MultiArchUefiPkg — prior art in cross-arch UEFI launching.
+## Supported environments
+
+Validated: **QEMU TCG and KVM**, CPUs `qemu64`/`core2duo` (the i5-4570
+32-bit-firmware + 64-bit-CPU shape is the reference target). The outer OVMF32
+host bridge PCI ID and the inner OVMF64 firmware both assume QEMU's layout;
+QEMU on `core2duo` reproduces the CPU side of the i5-4570 hardware test.
+
+- **Real hardware:** not yet exercised end-to-end; the host-bridge PCI ID is
+  logged at boot (`efi64boot: Host bridge PCI ID = 0x...`). With CSM enabled
+  the system may boot via legacy BIOS and never reach UEFI at all — test with
+  CSM disabled and UEFI-only first.
+- **VMware:** feasible only with a VMware-aware OVMF32 build (the inner
+  firmware trips `AcpiTimerLibConstructor` on VMware's `0x8086:0x7190` host
+  bridge).
