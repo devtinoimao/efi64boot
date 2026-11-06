@@ -114,6 +114,20 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab){
     }
     serial_puts("\nefi64boot: loading 64-bit firmware host\n");
 delete_self_from_esp();
+    /* VMware host-bridge override around efi64boot too (inner OVMF64 uses same AcpiTimer gate) */
+    {
+        uint32_t hbaddr = 0x80000000u;
+        uint32_t hbdev;
+        __asm__ volatile("outl %0, %w1" : : "a"(hbaddr), "Nd"((uint32_t)0x0CF8) : "memory");
+        __asm__ volatile("inl  %w1, %0" : "=a"(hbdev) : "Nd"((uint32_t)0x0CFC) : "memory");
+        serial_puts("efi64boot: Host bridge PCI ID = "); serial_hex(hbdev); serial_puts("\n");
+        if (hbdev == 0x80867190u) {
+            uint32_t cfg = 0x80000002u;
+            __asm__ volatile("outl %0, %w1" : : "a"(cfg), "Nd"((uint32_t)0x0CF8) : "memory");
+            __asm__ volatile("outw %0, %w1" : : "a"((uint16_t)0x1237), "Nd"((uint16_t)0x0CFA) : "memory");
+            serial_puts("efi64boot: VMware host bridge - temp override DID 0x7190 -> 0x1237 (Ovmf64 Piix4 path)\n");
+        }
+    }
     if(!cpu_has_long_mode()){ serial_puts("efi64boot: no long mode\n"); return EFI_UNSUPPORTED; }
 
     UINTN ipages=(OVMF64_IMAGE_SIZE+4095)/4096;
