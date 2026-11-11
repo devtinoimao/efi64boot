@@ -250,6 +250,6 @@ Real VMware / real Mac hardware still untested.
   (599a612f19) is now the `edk2` submodule in both repos. shared/ is
   vendored into each repo; Makefiles use -Ishared -I../shared.
 - README/guides humanised, MIT LICENSE + NOTICE + SPDX tags added, all
-  /tmp/opencode paths removed, ISO-based QEMU test commands documented
+  ./build paths removed, ISO-based QEMU test commands documented
   (user supplies the ISO), proper compile instructions added.
 - QEMU pc/q35 (and 12 GiB for efi64boot) re-validated after the cleanup.
