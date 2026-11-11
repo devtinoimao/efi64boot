@@ -1,131 +1,187 @@
 # efi64boot
 
-**Launch 64-bit UEFI firmware from a 32-bit BOOTIA32.EFI boot application, on
-64-bit-capable CPU from 32-bit firmware.** The mirror image of
-[efi32boot](https://github.com/devtinoimao/efi32boot): there, 64-bit firmware
-hosted a complete 32-bit firmware; here, the 32-bit firmware stays in charge
-and we add a long-mode trampoline on top.
+**A 32-bit firmware, a 64-bit CPU, and a 64-bit operating system that should
+not be able to boot. Now it can.**
 
-Status: **M3 milestone achieved — Windows Setup boots** (2026-10-27).
-`BOOTIA32.EFI` (IA32) runs on 32-bit OVMF, hands off to a hosted 64-bit
-OVMF64 SEC entry, runs the full 64-bit PEI/DXE chain, and boots
-`win10ltc.iso` into Windows Setup under QEMU (verified on both TCG and KVM,
-`qemu64` and `core2duo` CPUs).
+Early Intel machines — the 2005/2006 transition kits and the first Intel
+MacBooks — shipped 32-bit EFI on processors that were perfectly capable of
+64-bit mode. Their firmware cannot load a 64-bit EFI application, so a normal
+64-bit OS installer simply refuses to start.
 
-This is AI-assisted experimental firmware. Not production-safe. Do not use
-on real hardware.
+`efi64boot` is the mirror image of
+[efi32boot](https://github.com/devtinoimao/efi32boot). There, a 64-bit host
+firmware carries a 32-bit inner firmware. Here a 32-bit `BOOTIA32.EFI`
+carries a complete 64-bit OVMF image, switches the CPU into long mode, and
+lets that firmware boot the OS.
 
-## What it does
+> AI-assisted experimental firmware. Not production-safe. Read the safety
+> notes before trying it on real hardware.
 
-1. `BOOTIA32.EFI` is a normal IA32 UEFI application loaded by the 32-bit
-   firmware.
-2. CPUID `0x80000001.EDX[29]` (LM) — refuse to continue on a 32-bit-only CPU.
-3. `AllocatePages` reserves a staging region below 4 GiB: page tables, a bridge
-   GDT, a fresh 64-bit stack, the parameter block, and the embedded 64-bit
-   payload (`ovmf64_start`).
-4. `relocate()` applies the SEC module's base relocations so it runs at its
-   new address.
-5. The full 16 MiB firmware MEMFD region (`0x800000`, `0xF80000` bytes) is
-   reserved at its build address (matching `OvmfPkgX64.fdf` `[FD.MEMFD]`)
-   and zero-initialized, so OVMF64 takes the native (non-TDX) SEC path and
-   no PCD patching is needed.
-6. The 32→64 trampoline: `cli`, load 64-bit GDT, CR4.PAE, CR3, EFER.LME,
-   CR0.PG; far-return into the 64-bit code segment; build a 256-entry IDT;
-   emit the `p`/`T`/`A` serial probes; perform pre-handoff CPU hygiene (clear
-   CR0 NW/CD, CR4.PSE, set `IA32_MTRR_DEF_TYPE` to E=1/FE=0/type=WB per
-   OVMF64's asserts).
-7. Jump to OVMF64's SEC entry (`rcx =` BootFV, `rdx =` temp-RAM stack top
-   `0x820000`). OVMF64's `SecMtrrSetup` / PlatformPei `MemDetect` asserts
-   pass, followed by PEI/DXE/BdsDxe.
-8. `delete_self_from_esp()` zeroes the start of `BOOTIA32.EFI` on the ESP so
-   BdsDxe can't re-select it; `SetVariable BootOrder` prioritizes the DVD.
+## How it works
 
-Resulting chain (verified):
 ```
-BOOTIA32.EFI (32-bit) -> OVMF64 SEC (64-bit) -> PEI -> DXE -> BdsDxe ->
-DVD boot -> Windows Setup
+32-bit host firmware
+    └── BOOTIA32.EFI  (this project)
+            ├── CPUID check: no long mode -> clean refusal
+            ├── copy OVMF64 below 4 GiB, rebase its SEC core
+            ├── reserve the 16 MiB MEMFD region at 0x800000
+            ├── identity-map RAM above 4 GiB (1 GiB pages, or a 2 MiB
+            │   fallback for CPUs without PDPE1GB)
+            ├── long mode: CR4.PAE -> CR3 -> EFER.LME -> CR0.PG -> far return
+            └── OVMF64 SEC -> PEI -> DXE -> BDS -> any 64-bit EFI OS
 ```
 
-This is the first verified run of a real 64-bit firmware on top of a 32-bit
-UEFI application, where earlier 64-bit-launch-only attempts (existing
-"EFI64Boot" public repo) stopped at payloads.
+Two things are worth calling out.
 
-## Bugs found and fixed along the way
+**It is OS-neutral.** The loader does not name, delete or prioritise any OS
+file, and it no longer rewrites `BootOrder`. The inner firmware's BDS decides
+what to boot, so Linux, Windows, BSD or anything else with a 64-bit EFI
+loader is equally welcome. It does zero its own `BOOTIA32.EFI` on the ESP so
+BDS cannot re-enter the loader — that is about our own file, not yours.
 
-- `EFI_BOOT_SERVICES` starts with a 24-byte `EFI_TABLE_HEADER`; calling
-  `gBS+8` calls the header CRC field (`#UD` at garbage EIP). (Carried over
-  from efi32boot lineage.)
-- The trampoline must fetch its cdecl argument from the stack; reading a
-  leftover register gave `CR3` the firmware's `RaiseTPL` pointer → instant
-  page-fault storm once paging re-enabled (found via `qemu -d int`).
-- 32-bit parameter fields must be read as dwords in 64-bit code; a qword
-  `mov rax,[rsi+4]` captures the next field into the upper half and calls
-  an address above 4 GiB.
-- Forcing `byte[0x80B000] = 2` selected OVMF64's TDX `tdcall` path
-  (`mov $0x80b000,%eax; cmpb $0x2,(%eax); jne`) → triple-fault/reset
-  *before* any SEC output. Removed. Verified the byte reads `0`.
-- MEMFD region was only 32 pages (128 KiB) but OVMF64's SEC stub writes temp
-  RAM at `0x814000` and sets `ESP = 0x820000` — both outside the reservation.
-  Enlarged to the full `0xF80000` (16 MiB) the OVMF64 build expects.
-- OVMF64's MTRR_DEF_TYPE after the outer 32-bit firmware does not satisfy
-  PlatformPei `MemDetect` asserts `(MtrrDefType & BIT11)!=0`,
-  `(MtrrDefType & BIT10)==0`, `(MtrrDefType & 0xFF)==6`; set it to
-  `E=1/FE=0/type=write-back (0x806)` before the handoff.
-- The earlier "apparent" OVMF64 shell was actually OVMF32's shell;
-  `Image type X64 can't be started on IA32 UEFI system` confirmed this.
+**It handles large memory.** The original page tables only mapped 0–4 GiB, so
+any machine with RAM above 4 GiB faulted during SEC. The loader now reads the
+UEFI memory map and CPUID physical-address width, publishes the high-memory
+size through CMOS `0x5B..0x5D` (only after a write/readback/restore scratch
+probe confirms those bytes are safe to touch), and extends the identity map
+past 4 GiB.
 
-## Build
+Platform detection is generic: host-bridge IDs are log labels only, and the
+ACPI PM device is discovered by PCI class code from any vendor. One firmware
+build works on QEMU i440FX, Q35, VMware and unknown chipsets.
+
+## What's in here
+
+| file | what it does |
+| --- | --- |
+| `main.c` | UEFI bootstrap, firmware relocation, above-4G page tables, hand-off |
+| `trampoline.asm` | 32→64 long-mode switch, per-vector fault watchdog IDT |
+| `blobs.S` | embeds `OVMF64.fd` and the trampoline/payload binaries |
+| `tools/gen_ovmf64.py` | extracts SEC offsets from a firmware image |
+| `ovmf64_constants.h` | generated from the shipped `OVMF64.fd` |
+| `shared/` | platform-neutral quirks + EDK2 patch/rebuild tooling |
+| `edk2/` | git submodule: the patched [EDK2 fork](https://github.com/devtinoimao/edk2/tree/hosted-firmware) |
+| `OVMF32.fd` | a 32-bit outer firmware, used for QEMU testing |
+
+## Status
+
+| environment | result |
+| --- | --- |
+| QEMU 10.2.2 `-M pc`, 2 GiB | hand-off → SEC → PEI → DXE → BDS, no faults |
+| QEMU 10.2.2 `-M q35`, 2 GiB | same; PM found at `00:1F.0` by class `06:01` |
+| QEMU `-m 12288` (no 1 GiB pages) | 2 MiB fallback; RAM top `0x340000000`, map to `0x1340000000` |
+| QEMU `-m 12288 -cpu max` | 1 GiB page path, same clean hand-off |
+| Forced unknown DID (`8086:DEAD`) | passes — no behaviour keyed to a chipset |
+| VMware, early Intel Macs | not validated end-to-end for this loader; detection + diagnostics only |
+
+The universal firmware patch itself **was** validated on real VMware
+Workstation 26.0.1 through the sibling `efi32boot` loader: `8086:7190`, PM at
+`00:07.3`, full chain to BDS, zero asserts. VMware's EFI here is 64-bit, so
+it exercises the 64-bit-host path rather than this loader's 32-bit-host path.
+
+## Build it
+
+Needs Python 3, `make`, a MinGW-w64 cross toolchain and NASM:
 
 ```bash
-make TOOLCHAIN_PREFIX=/path/to/mingw-w64/bin/ all
-# needs: x86_64-w64-mingw32-gcc, i686-w64-mingw32-gcc, nasm
+git clone --recurse-submodules https://github.com/devtinoimao/efi64boot.git
+cd efi64boot
+
+# sibling repo contains the private toolchain helper
+export PATH="$PWD/../efi32boot/toolchain/usr/bin:$PATH"
+# or point at your own:  make TOOLCHAIN_PREFIX=/path/to/mingw/bin/ all
+
+make all                 # -> BOOTIA32.EFI
 ```
 
-## Test (QEMU, no real hardware involved)
+`OVMF64.fd` is included, so EDK2 is not needed just to compile the loader.
+
+### Rebuilding the embedded firmware
+
+The `edk2` submodule points at branch `hosted-firmware` of
+`devtinoimao/edk2`. The X64 build needs `MEMFD_BASE_ADDRESS = 0x800000`
+(IA32 uses `0x40000000`), so the rebuild script restores that value for the
+X64 pass and puts the shared FDF include back on exit:
 
 ```bash
-# IA32 OVMF firmware (32-bit) + 64-bit CPU = the exact target configuration
-dd if=/dev/zero of=esp.img bs=1M count=260
-mkfs.vfat -F 32 esp.img
-mmd -i esp.img ::/EFI ::/EFI/BOOT
-mcopy -i esp.img BOOTIA32.EFI ::/EFI/BOOT/BOOTIA32.EFI
-qemu-system-x86_64 -accel tcg -cpu qemu64 -m 2048 -display gtk \
-  -serial file:boot.log -bios OVMF32.fd \
-  -drive format=raw,file=esp.img \
-  -drive file=/path/to/win10ltc.iso,format=raw,if=ide,media=cdrom
-# Hit a key at "Press any key to boot from CD or DVD..."
+git submodule update --init --depth 1 edk2   # if not cloned recursively
+bash shared/rebuild_ovmf.sh
 ```
 
-KVM + `core2duo` (Intel Mac class 32-bit-firmware + 64-bit-CPU setup) also
-works; use `-accel kvm -cpu core2duo`.
+Builds run inside `localhost/edk2-builder:bookworm` (GCC 12, NASM, iasl,
+EDK2 BaseTools). `shared/patch_ovmf_platform.py` is the idempotent source of
+truth; `shared/patches/ovmf-platform-portability.patch` is a plain
+`git apply`-able diff for anyone who prefers patches.
 
-CI runs the TCG build on GitHub Actions (no KVM on runners).
+## Test it
 
-## Remaining (housekeeping, not blockers)
+### Quick smoke test (no OS needed)
 
-- ESP self-delete still fails (FAT driver returns `0x80000003`/`0x00000002`);
-  currently handled by zeroing the file's first 64 bytes before handoff.
-- Debug probes (`p`/`T`/`A`/`B`/`n`/`S`/`R`) still present.
-- Serial output during OVMF64 SEC/DXE is mostly `debugcon` port `0x402`
-  (this build routes `DEBUG` there, not COM1) — capture with `-debugcon`.
+```bash
+rm -f build/esp.img
+dd if=/dev/zero of=build/esp.img bs=1M count=64
+mkfs.vfat -F 32 build/esp.img
+mmd -i build/esp.img ::/EFI ::/EFI/BOOT
+mcopy -i build/esp.img BOOTIA32.EFI ::/EFI/BOOT/BOOTIA32.EFI
 
-## Related
+qemu-system-x86_64 -accel tcg -cpu qemu64 -m 2048 -smp 2 \
+  -bios OVMF32.fd \
+  -drive format=raw,file=build/esp.img \
+  -serial file:build/boot.log -display none -no-reboot
+```
 
-- [efi32boot](https://github.com/devtinoimao/efi32boot) — the reverse
-  direction (64-bit firmware hosting 32-bit OVMF), same author, same
-  experimental stance.
-- EDK2 DUET, MultiArchUefiPkg — prior art in cross-arch UEFI launching.
-## Supported environments
+Look for `pTAB0n` in `build/boot.log` (long mode reached, SEC called) and the
+`BdsDxe` lines. `XCnn` would mean the watchdog caught an exception.
 
-Validated: **QEMU TCG and KVM**, CPUs `qemu64`/`core2duo` (the i5-4570
-32-bit-firmware + 64-bit-CPU shape is the reference target). The outer OVMF32
-host bridge PCI ID and the inner OVMF64 firmware both assume QEMU's layout;
-QEMU on `core2duo` reproduces the CPU side of the i5-4570 hardware test.
+### Booting a real OS from an ISO you supply
 
-- **Real hardware:** not yet exercised end-to-end; the host-bridge PCI ID is
-  logged at boot (`efi64boot: Host bridge PCI ID = 0x...`). With CSM enabled
-  the system may boot via legacy BIOS and never reach UEFI at all — test with
-  CSM disabled and UEFI-only first.
-- **VMware:** feasible only with a VMware-aware OVMF32 build (the inner
-  firmware trips `AcpiTimerLibConstructor` on VMware's `0x8086:0x7190` host
-  bridge).
+No OS media is shipped here. Bring your own ISO — a WinPE/Windows installer
+is one example, a Linux or BSD installer is another:
+
+```bash
+ISO=/path/to/your/os.iso             # you provide this file
+
+qemu-system-x86_64 -accel tcg -cpu qemu64 -m 2048 -smp 2 \
+  -bios OVMF32.fd \
+  -drive format=raw,file=build/esp.img \
+  -drive file="$ISO",format=raw,if=ide,media=cdrom \
+  -serial file:build/boot.log -display gtk -no-reboot
+```
+
+Hit a key at the "Press any key to boot from CD or DVD..." prompt if your ISO
+has one. `-accel kvm -cpu core2duo` also works and is closer to the early
+Intel Mac shape.
+
+## Things still on the list
+
+- `gen_ovmf64.py` hardcodes the temp-RAM stack at `0x820000` instead of
+  reading it from the SEC stub.
+- ESP self-delete is unreliable on FAT (`0x80000003`); we zero the first 64
+  bytes of our own loader instead.
+- The single-character debug probes (`p`/`T`/`A`/`B`/`n`/`S`/`R`) are still
+  in the trampoline — handy when bisecting, noisy otherwise.
+- Inner OVMF64 `DEBUG` output goes to debugcon `0x402`, not COM1. Add
+  `-debugcon file:build/debug.log -global isa-debugcon.iobase=0x402` if you
+  want it.
+
+## Be careful
+
+- Don't install this as the primary bootloader on a machine you rely on.
+- A CPU without long mode (Core Duo/Yonah) is refused cleanly — that is by
+  design, not a bug.
+- The 16 MiB MEMFD reservation and the fixed `0x80B000` TDX flag byte are
+  tied to the firmware build. Rebuild both sides together.
+- No Secure Boot guarantees.
+- If it fails, send the serial log. It is the only useful bug report here.
+
+## Credits and licensing
+
+Our code is **MIT licensed** — see `LICENSE`. The embedded `OVMF64.fd` and
+`OVMF32.fd` derive from TianoCore EDK2 (**BSD-2-Clause-Patent**); upstream
+notices remain in force. The EDK2 fork is a submodule rather than a vendor
+copy so provenance stays visible. See `NOTICE` for details.
+
+Related work: TianoCore OVMF, EDK2 DUET, Intel MultiArchUefiPkg, and the
+sibling `efi32boot` project, which is the sole reference implementation for
+this code. This remains an AI-assisted research prototype: the claims above
+come from repeatable QEMU/VMware runs, not from wishful thinking.

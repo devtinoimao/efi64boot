@@ -136,7 +136,7 @@
   advancing later). CHECK the F-probe absence vs lgdt placement FIRST.
 
 ## ACTIVE ISOLATION TEST: farret2.img (payload-state MIMIC) — PASSING (SOLVED)
-- File: /tmp/opencode/farret2_test.asm + farret2.img (clean, 512 B, 23:42).
+- File: ./build/farret2_test.asm + farret2.img (clean, 512 B, 23:42).
 - Mimics: CR4=0x660, EFER|=0x500, CR0 base|PE|PG single write, FULL 4-GiB map
   (PDPT@0x11000 + 4 PDs @0x12000–0x15FFF, 2 MiB pages, P|RW|PS=0x83), HIGH GDT
   @0x7EAD3000 (0x18 compat entry + gdtr blob @0x7EAD3080 = u16 limit + u64
@@ -234,9 +234,9 @@ timeout 45 qemu-system-x86_64 -accel tcg -cpu qemu64 -m 2048 -smp 2 \
 - Test artifacts: /home/abokaborda/w64work/{esp_m10.img, OVMF32.fd,
   BOOTIA32.EFI, m2_t25.log, m2_int25.log}; newer evidence. Older m2_t22/int22
   = pre-farjmp (retf GP(0)); m2_t25/int25 = current (farjmp works, e=0x10).
-- Isolation tests: /tmp/opencode/farret_test.asm+farret.img (PASSING round
+- Isolation tests: ./build/farret_test.asm+farret.img (PASSING round
   trip), farret2_test.asm+farret2.img (mimic, PASSING — run with -m 2048!),
-  farret2_s.log/farret2_int.log; QEMU v8.2 sources in /tmp/opencode:
+  farret2_s.log/farret2_int.log; QEMU v8.2 sources in ./build:
   seg_helper.c, translate.c, exc_helper.c, cpu-exec-common.c (misc_helper.c
   still to fetch).
 

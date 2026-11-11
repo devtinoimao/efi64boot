@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /* Minimal IA32 UEFI definitions for efi64boot (only what M1 uses). */
 #ifndef EFI32_H
 #define EFI32_H

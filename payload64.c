@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * efi64boot M1 64-bit payload — runs in long mode on a CPU that the
  * 32-bit firmware only drives in protected mode. Prints proof-of-life

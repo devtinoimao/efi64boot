@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /* Service indices into svc_table32 — MUST match fake64_bind_services order. */
 #ifndef BRIDGE_H
 #define BRIDGE_H

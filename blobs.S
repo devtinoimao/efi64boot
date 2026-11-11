@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /* Embedded flat binaries: 32-bit trampoline + 64-bit payload. */
 
     .global _trampoline_start

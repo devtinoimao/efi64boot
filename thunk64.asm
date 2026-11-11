@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: MIT
 ; efi64boot M2 — 64->32 service thunks (v2, bridge-context design).
 ;
 ; All cross-mode state flows through BRIDGE_CTX (in .data, linked into the

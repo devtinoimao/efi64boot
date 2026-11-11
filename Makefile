@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # efi64boot — BOOTIA32.EFI: run 64-bit EFI executables from 32-bit UEFI
 # firmware on a 64-bit capable CPU. AI-assisted experimental project.
 #
@@ -18,12 +19,16 @@ NASM  := $(TOOLCHAIN_PREFIX)nasm
 # link-time image-relative ADDRESSES (~0xfe0 = low linear memory) while the
 # asm side reads [rip+...] inside the staging copy — the two sides never
 # touch the same memory (caused the "GDTR loaded 0/0" bug).
+# ../shared is the canonical home of platform_quirks.h, shared with efi32boot.
+# A standalone clone carries shared/ itself; the combined workspace also has
+# a sibling ../shared.  Both are searched, self-contained copy first.
+SHARED_INC := -Ishared -I../shared
 CFLAGS64 := -Os -g0 -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector \
             -fno-asynchronous-unwind-tables -fno-unwind-tables \
-            -mno-red-zone -fshort-wchar -Wall -Wextra
+            -mno-red-zone -fshort-wchar -Wall -Wextra $(SHARED_INC)
 CFLAGS32 := -Os -g0 -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector \
             -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-pic \
-            -fshort-wchar -Wall -Wextra -Wno-unused-parameter
+            -fshort-wchar -Wall -Wextra -Wno-unused-parameter $(SHARED_INC)
 
 all: BOOTIA32.EFI
 
@@ -55,7 +60,7 @@ build/trampoline.bin: trampoline.asm
 build/blobs.o: blobs.S build/trampoline.bin build/payload64.bin OVMF64.fd
 	$(CC32) $(CFLAGS32) -c -o $@ $<
 
-build/main.o: main.c efi32.h
+build/main.o: main.c efi32.h ovmf64_constants.h ../shared/platform_quirks.h
 	$(CC32) $(CFLAGS32) -c -o $@ $<
 
 build/efi_crt.o: efi_crt.asm

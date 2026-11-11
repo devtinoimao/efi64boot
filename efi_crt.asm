@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: MIT
 ; EFI IA32 application entry: mingw calls efi_start with
 ; (ECX = image handle?, ...). Actually UEFI IA32 passes args on the
 ; stack per cdecl: (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable).

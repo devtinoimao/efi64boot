@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: MIT
 ; 64-bit payload entry stub — first bytes of the flat payload binary.
 ; RCX = PAYLOAD_PARAMS* (set by trampoline, MS x64 ABI since the
 ; payload is compiled with x86_64-w64-mingw32-gcc).

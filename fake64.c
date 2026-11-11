@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * efi64boot M2 — fake 64-bit EFI environment (core services only).
  *

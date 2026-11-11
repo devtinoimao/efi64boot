@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: MIT
 ; efi64boot trampoline: 32-bit protected mode -> long mode handoff.
 ; Assembled with `nasm -f bin` (flat, ORG 0) and embedded into the
 ; BOOTIA32.EFI image; copied at runtime to a staging page and entered

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * efi64boot - BOOTIA32.EFI. 32-bit firmware that relocates the 64-bit EDK2
  * OVMF build below 4 GiB, switches the CPU to long mode and lets OVMF64
@@ -7,8 +8,17 @@
 #include <stddef.h>
 #include "efi32.h"
 #include "ovmf64_constants.h"
+#include "platform_quirks.h"   /* canonical copy: ../shared/platform_quirks.h */
 
 #define PAYLOAD_MARKER 0x45463634
+
+/* efi32.h stops its EFI_MEMORY_TYPE enum at EfiRuntimeServicesData.  The
+ * conventional (free RAM) type is 7 in the UEFI spec; the memory-map scan
+ * below only needs the numeric value. */
+#define EFI_CONVENTIONAL_MEMORY_TYPE 7u
+#define EFI_MEMORY_DESCRIPTOR_TYPE_OFS   0u
+#define EFI_MEMORY_DESCRIPTOR_PHYS_OFS   8u  /* EFI_PHYSICAL_ADDRESS, 8-aligned */
+#define EFI_MEMORY_DESCRIPTOR_PAGES_OFS 24u
 
 static inline void outb(uint16_t p, uint8_t v){ __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
 static inline uint8_t inb(uint16_t p){ uint8_t v; __asm__ volatile("inb %1,%0":"=a"(v):"Nd"(p)); return v; }
@@ -40,12 +50,143 @@ typedef struct {
 static EFI_SYSTEM_TABLE *gST;
 static EFI_BOOT_SERVICES *gBS;
 static void *gRT=0;
+/* Bytes of RAM above 4 GiB as reported by QEMU/VMware CMOS 0x5B..0x5D
+ * (64 KiB units).  Used as a fallback when the host UEFI memory map omits
+ * high memory, which a 32-bit host firmware is allowed to do. */
+static uint64_t gCmosHighMemBytes = 0;
 
 static void serial_putc(char c){ while ((inb(0x3FD)&0x20)==0); outb(0x3F8,(uint8_t)c); }
 static void serial_puts(const char *s){ while(*s){ if(*s=='\n') serial_putc('\r'); serial_putc(*s++); } }
 static void serial_hex(uint32_t v){ static const char h[]="0123456789ABCDEF"; for(int i=28;i>=0;i-=4) serial_putc(h[(v>>i)&0xF]); serial_putc(' '); }
+static void serial_hex16(uint16_t v){ static const char h[]="0123456789ABCDEF"; for(int i=12;i>=0;i-=4) serial_putc(h[(v>>i)&0xF]); }
+static void serial_hex64(uint64_t v){ static const char h[]="0123456789ABCDEF"; for(int i=60;i>=0;i-=4) serial_putc(h[(v>>i)&0xF]); }
 
-static int cpu_has_long_mode(void){ uint32_t a,b,c,d; __asm__ volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(0x80000000u)); if(a<0x80000001u)return 0; __asm__ volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(0x80000001u)); return (d>>29)&1; }
+static int cpu_has_long_mode(void){ return pq_cpu_has_long_mode(); }
+
+/* ------------------------------------------------------------------------- */
+/* Above-4G decoding                                                         */
+/*                                                                           */
+/* OVMF64 discovers RAM above 4 GiB from QEMU fw_cfg E820 (preferred) or, on
+ * platforms without fw_cfg, from CMOS 0x5B..0x5D.  Either way its SEC/PEI
+ * phase runs on OUR CR3 until DXE installs its own tables.  The original
+ * build_page_tables() only identity-mapped 0..4 GiB, so any address above
+ * 4 GiB faulted as soon as the guest had more than 4 GiB of RAM.
+ *
+ * fix: extend the initial long-mode tables to `map_top` using 1 GiB pages
+ * (CPUID.80000001H:EDX[26]); fall back to 2 MiB pages on older CPUs (Core 2
+ * Duo / early Intel Macs have no 1 GiB page support).  All page-table memory
+ * stays below 4 GiB and is identity-mapped by PML4[0].
+ * ------------------------------------------------------------------------- */
+
+#define PQ_1GB    (1ULL << 30)
+#define PQ_512GB  (1ULL << 39)
+#define PQ_4GB    (1ULL << 32)
+
+/* Highest *RAM* address (exclusive) reported by the host UEFI memory map.
+ * Returns PQ_4GB when the host firmware describes no memory above 4 GiB (a
+ * 32-bit host firmware is allowed to omit it).  Descriptor stride comes from
+ * GetMemoryMap's DescSize -- OVMF uses 48 on X64, 40 on some IA32 builds. */
+static uint64_t efi_memory_top(void) {
+    typedef EFI_STATUS (*GetMemoryMap_t)(UINTN *, void *, UINTN *, UINTN *, UINT32 *);
+    typedef EFI_STATUS (*AllocatePool_t)(EFI_MEMORY_TYPE, UINTN, void **);
+    typedef EFI_STATUS (*FreePool_t)(void *);
+    GetMemoryMap_t gmm = (GetMemoryMap_t)gBS->GetMemoryMap;
+    AllocatePool_t ap  = (AllocatePool_t)gBS->AllocatePool;
+    FreePool_t     fp  = (FreePool_t)gBS->FreePool;
+    UINTN size = 0, key = 0, descSize = 0, actual = 0;
+    UINT32 ver = 0;
+    uint64_t top = PQ_4GB;
+    if (!gmm || !ap) return top;
+    gmm(&size, NULL, &key, &descSize, &ver);   /* expected: BUFFER_TOO_SMALL */
+    if (!size || !descSize) return top;
+    size += 4096;
+    void *buf = NULL;
+    if (EFI_ERROR(ap(EfiLoaderData, size, &buf)) || !buf) return top;
+    actual = size;
+    EFI_STATUS st = gmm(&actual, buf, &key, &descSize, &ver);
+    if (!EFI_ERROR(st)) {
+        uint8_t *p = (uint8_t *)buf;
+        for (UINTN off = 0; off + descSize <= actual; off += descSize) {
+            uint32_t type  = *(uint32_t *)(p + off + EFI_MEMORY_DESCRIPTOR_TYPE_OFS);
+            uint64_t phys  = *(uint64_t *)(p + off + EFI_MEMORY_DESCRIPTOR_PHYS_OFS);
+            uint64_t pages = *(uint64_t *)(p + off + EFI_MEMORY_DESCRIPTOR_PAGES_OFS);
+            if (type != EFI_CONVENTIONAL_MEMORY_TYPE) continue;
+            uint64_t end = phys + (pages << 12);
+            if (end > phys && end > top) top = end;
+        }
+    }
+    if (fp) fp(buf);
+    return top;
+}
+
+/* Fill pdpt0[4..] (4 GiB..512 GiB) and, if needed, PML4[1..] with identity
+ * mappings.  `pool` is a page-aligned, zeroed scratch buffer of 4 KiB pages
+ * located below 4 GiB.  Returns the number of PML4 entries covered. */
+static uint32_t extend_page_tables_high(uint64_t *pml4, uint64_t *pdpt0,
+                                        uint8_t *pool, uint32_t pool_pages,
+                                        uint64_t map_top, uint32_t phys_bits,
+                                        int use_1g) {
+    uint64_t cap = map_top;
+    uint64_t phys_cap = (phys_bits >= 48) ? (1ULL << 48) : (1ULL << phys_bits);
+    uint32_t page = 0;
+    uint32_t n_pml4;
+
+    if (cap > phys_cap) cap = phys_cap;
+    /* 1 GiB pages: cap at 1 TiB.  2 MiB fallback: cap at 64 GiB so the
+     * page-table pool stays small on CPUs without PDPE1GB support. */
+    if (use_1g) { if (cap > (1024ULL * PQ_1GB)) cap = 1024ULL * PQ_1GB; }
+    else        { if (cap >    (64ULL * PQ_1GB)) cap =   64ULL * PQ_1GB; }
+    if (cap <= PQ_4GB) return 1;
+
+    n_pml4 = (uint32_t)((cap + PQ_512GB - 1) / PQ_512GB);
+    if (n_pml4 < 1) n_pml4 = 1;
+    if (n_pml4 > 2) n_pml4 = 2;   /* 1 TiB with 1 GiB pages */
+
+    /* PML4[0] -> pdpt0: entries 0..3 already cover 0..4 GiB with 2 MiB
+     * pages.  Entries 4..511 cover 4 GiB..512 GiB.  A PDPT may mix PS=1
+     * (1 GiB) and PS=0 (pointer to a 2 MiB PD) entries. */
+    {
+        uint64_t first = 4ULL * PQ_1GB;
+        uint64_t last  = (cap < PQ_512GB) ? cap : PQ_512GB;
+        for (uint64_t a = first; a < last; a += PQ_1GB) {
+            uint32_t idx = (uint32_t)(a / PQ_1GB);
+            if (use_1g) {
+                pdpt0[idx] = a | 0x83u;
+            } else if (page < pool_pages) {
+                uint64_t *pd = (uint64_t *)(pool + (page++) * 4096u);
+                pdpt0[idx] = ((uint64_t)(uint32_t)pd) | 0x03u;
+                for (uint32_t k = 0; k < 512; k++)
+                    pd[k] = (a + (uint64_t)k * 0x200000ULL) | 0x83u;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /* PML4[1..] for address space above 512 GiB. */
+    for (uint32_t i = 1; i < n_pml4; i++) {
+        uint64_t *pdpt;
+        uint64_t base = (uint64_t)i * PQ_512GB;
+        if (page >= pool_pages) break;
+        pdpt = (uint64_t *)(pool + (page++) * 4096u);
+        pml4[i] = ((uint64_t)(uint32_t)pdpt) | 0x03u;
+        for (uint32_t j = 0; j < 512; j++) {
+            uint64_t a = base + (uint64_t)j * PQ_1GB;
+            if (a >= cap) break;
+            if (use_1g) {
+                pdpt[j] = a | 0x83u;
+            } else if (page < pool_pages) {
+                uint64_t *pd = (uint64_t *)(pool + (page++) * 4096u);
+                pdpt[j] = ((uint64_t)(uint32_t)pd) | 0x03u;
+                for (uint32_t k = 0; k < 512; k++)
+                    pd[k] = (a + (uint64_t)k * 0x200000ULL) | 0x83u;
+            } else {
+                break;
+            }
+        }
+    }
+    return n_pml4;
+}
 
 static void build_page_tables(uint64_t *pml4, uint64_t *pdpt, uint64_t *pds){ for(int i=0;i<512;i++){pml4[i]=0;pdpt[i]=0;} pml4[0]=((uint64_t)(uint32_t)pdpt)|0x03; for(int g=0;g<4;g++){ uint64_t *pd=pds+g*512; pdpt[g]=((uint64_t)(uint32_t)pd)|0x03; for(int i=0;i<512;i++) pd[i]=((((uint64_t)g*512u)+(uint64_t)i)<<21)|0x83; } }
 
@@ -93,42 +234,58 @@ static void delete_self_from_esp(void) {
 EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab){
     BOOT_PARAMS *params; uint8_t *region; uint64_t *pml4,*pdpt,*pds,*gdt64;
     gST=systab; gBS=systab->BootServices; gRT=(void*)systab->RuntimeServices;
-    /* Detect the PCI host bridge so logs make clear which VMM/platform we're running on. */
+    /* Detect the platform once, correctly.  A 32-bit read at PCI config
+     * offset 0 is VID in the low word / DID in the high word; the old code
+     * printed the raw dword and compared it against a byte-swapped constant,
+     * then tried to overwrite the (read-only) DID.  See platform_quirks.h. */
+    pq_platform_info_t plat = pq_platform_detect();
     {
-        uint32_t addr = 0x80000000u;
-        uint32_t val;
-        __asm__ volatile("outl %0, %w1" : : "a"(addr), "Nd"((uint32_t)0x0CF8) : "memory");
-        __asm__ volatile("inl  %w1, %0" : "=a"(val) : "Nd"((uint32_t)0x0CFC) : "memory");
-        serial_puts("efi64boot: Host bridge PCI ID = ");
-        serial_hex(val);
+        uint32_t cfg_units = (uint32_t)(
+            ((uint64_t)pq_cmos_read(0x5Du) << 16) |
+            ((uint64_t)pq_cmos_read(0x5Cu) <<  8) |
+            (uint64_t)pq_cmos_read(0x5Bu));
+        gCmosHighMemBytes = (uint64_t)cfg_units << 16;
+    }
+    serial_puts("efi64boot: platform ");
+    serial_puts(plat.name);
+    serial_puts("  host bridge ");
+    serial_hex16(plat.vid); serial_putc(':'); serial_hex16(plat.did);
+    serial_puts("  (cfg dword "); serial_hex(plat.raw); serial_puts(")\n");
+    if (plat.pm_present) {
+        serial_puts("efi64boot: ACPI PM device 00:");
+        serial_hex16(plat.pm_dev); serial_putc('.'); serial_putc('0' + plat.pm_fn);
+        serial_puts(" class "); serial_hex16(plat.pm_class);
+        serial_puts(" style "); serial_hex((uint32_t)plat.pm_style);
         serial_puts("\n");
+    } else {
+        serial_puts("efi64boot: WARNING no ACPI PM device (class 0680/0601) found\n");
     }
-    if (gRT) {
-        typedef EFI_STATUS (*SetVariable_t)(unsigned short*, void*, unsigned int, UINTN, void*);
-        unsigned short name[] = { L'B',L'o',L'o',L't',L'O',L'r',L'd',L'e',L'r', 0 };
-        static const uint8_t guid[16] = { 0x61,0xdf,0xe4,0x8b, 0xca,0x93,0xd2,0x11, 0xaa,0x0d, 0x00,0xe0,0x98,0x03,0x2b,0x8c };
-        unsigned short order[] = { 3, 1, 0, 2 }; /* DVD(3) first, then HDD, UiApp, Shell */
-        unsigned int attrs = 0x07;
-        SetVariable_t sv = (SetVariable_t)((uint32_t *)gRT)[6];
-        if (sv) { EFI_STATUS rst = sv(name, (void *)guid, attrs, sizeof(order), order); serial_puts("efi64boot: Set BootOrder status "); serial_hex((uint32_t)rst); serial_puts("\n"); }
+    if (plat.generic_fallback) {
+        serial_puts("efi64boot: host bridge has no dedicated OVMF path; using the\n");
+        serial_puts("efi64boot: generic fallback in the single universal firmware build\n");
     }
+    /* No BootOrder / Boot#### variable manipulation.  The old code forced
+     * "DVD first, then HDD, UiApp, Shell" to make Windows Setup boot first;
+     * that is an OS-specific policy and breaks any other EFI OS.  The inner
+     * firmware's BDS owns boot policy entirely. */
+    (void)gRT;
     serial_puts("\nefi64boot: loading 64-bit firmware host\n");
 delete_self_from_esp();
-    /* VMware host-bridge override around efi64boot too (inner OVMF64 uses same AcpiTimer gate) */
-    {
-        uint32_t hbaddr = 0x80000000u;
-        uint32_t hbdev;
-        __asm__ volatile("outl %0, %w1" : : "a"(hbaddr), "Nd"((uint32_t)0x0CF8) : "memory");
-        __asm__ volatile("inl  %w1, %0" : "=a"(hbdev) : "Nd"((uint32_t)0x0CFC) : "memory");
-        serial_puts("efi64boot: Host bridge PCI ID = "); serial_hex(hbdev); serial_puts("\n");
-        if (hbdev == 0x80867190u) {
-            uint32_t cfg = 0x80000002u;
-            __asm__ volatile("outl %0, %w1" : : "a"(cfg), "Nd"((uint32_t)0x0CF8) : "memory");
-            __asm__ volatile("outw %0, %w1" : : "a"((uint16_t)0x1237), "Nd"((uint16_t)0x0CFA) : "memory");
-            serial_puts("efi64boot: VMware host bridge - temp override DID 0x7190 -> 0x1237 (Ovmf64 Piix4 path)\n");
-        }
+    /* Legal platform quirk: make sure the ACPI PM I/O space is enabled on
+     * the *actual* PM device (probed, not assumed).  Stock OVMF64 programs
+     * PMBA at 00:01.3; VMware's PIIX4 PM is at 00:07.3 and ICH7/ICH9 LPC
+     * at 00:1F.0, so the loader does it here before handoff.  This is a
+     * no-op if the host firmware already enabled it (the normal case),
+     * because reprogramming PMBASE under a running firmware breaks SMI/SCI. */
+    if (pq_enable_pm_io(&plat))
+        serial_puts("efi64boot: ACPI PM I/O space enabled on probed PM device\n");
+
+    if(!cpu_has_long_mode()){
+        serial_puts("efi64boot: CPU has no IA-32e long mode - cannot host OVMF64\n");
+        if (plat.kind == PQ_PLAT_INTEL_MOBILE || plat.kind == PQ_PLAT_APPLE_INTEL)
+            serial_puts("efi64boot: 2005/2006 Core Duo (Yonah) Macs are 32-bit only; Core 2 Duo required\n");
+        return EFI_UNSUPPORTED;
     }
-    if(!cpu_has_long_mode()){ serial_puts("efi64boot: no long mode\n"); return EFI_UNSUPPORTED; }
 
     UINTN ipages=(OVMF64_IMAGE_SIZE+4095)/4096;
     EFI_PHYSICAL_ADDRESS addr=0;
@@ -159,6 +316,53 @@ delete_self_from_esp();
     pml4=(uint64_t*)(region+0x00000); pdpt=(uint64_t*)(region+0x01000); pds=(uint64_t*)(region+0x02000); gdt64=(uint64_t*)(region+0x06000);
     params=(BOOT_PARAMS*)(region+0x07000);
     build_page_tables(pml4,pdpt,pds);
+
+    /* ---- above-4G decoding ------------------------------------------- */
+    {
+        uint64_t map_top   = efi_memory_top();
+        uint64_t cmos_top  = PQ_4GB + gCmosHighMemBytes;
+        uint64_t high_top  = (map_top > cmos_top) ? map_top : cmos_top;
+        uint64_t map_limit = high_top + 64ULL * PQ_1GB; /* room for MMIO64 */
+        uint32_t phys_bits = pq_cpu_phys_bits();
+        int      use_1g    = pq_cpu_has_1g_pages();
+        uint32_t pool_pages = use_1g ? 2u : 68u;
+        EFI_PHYSICAL_ADDRESS pool_addr = 0;
+        uint8_t *pool = 0;
+
+        serial_puts("efi64boot: RAM top "); serial_hex64(high_top);
+        serial_puts(" CMOS-high "); serial_hex64(gCmosHighMemBytes);
+        serial_puts(" physbits "); serial_hex(phys_bits);
+        serial_puts(" PDPE1GB "); serial_hex((uint32_t)use_1g);
+        serial_puts("\n");
+
+        /* Publish high RAM to OVMF64's CMOS fallback path.  No platform
+         * allowlist: pq_cmos_set_highmem() probes that 0x5B..0x5D behave as
+         * scratch RAM, restores the originals on failure, and only then
+         * commits.  Machines whose EC/SMM owns those bytes are left alone. */
+        if (high_top > PQ_4GB) {
+            if (pq_cmos_set_highmem(high_top - PQ_4GB))
+                serial_puts("efi64boot: CMOS 0x5B..0x5D high-memory size published\n");
+            else
+                serial_puts("efi64boot: CMOS high-mem bytes not writable; skipped (no platform-specific build needed)\n");
+        }
+
+        if (high_top > PQ_4GB) {
+            EFI_STATUS pst = gBS->AllocatePages(AllocateAnyPages, EfiLoaderData,
+                                                pool_pages, &pool_addr);
+            if (!EFI_ERROR(pst) && pool_addr < PQ_4GB) {
+                pool = (uint8_t *)(uint32_t)pool_addr;
+                for (UINTN z = 0; z < (UINTN)pool_pages * 4096u; z++) pool[z] = 0;
+                extend_page_tables_high(pml4, pdpt, pool, pool_pages,
+                                        map_limit, phys_bits, use_1g);
+                serial_puts("efi64boot: identity map extended above 4 GiB to ");
+                serial_hex64(map_limit);
+                serial_puts("\n");
+            } else {
+                serial_puts("efi64boot: WARNING high-memory page-table pool alloc failed; above-4G NOT mapped\n");
+            }
+        }
+    }
+
     gdt64[0]=0; gdt64[1]=0x00AF9A000000FFFFULL; gdt64[2]=0x00CF92000000FFFFULL; gdt64[3]=0x00CF9A000000FFFFULL; gdt64[4]=0x00CF9A000000FFFFULL;
 
     params->pml4_phys=(uint32_t)(uint32_t*)pml4;

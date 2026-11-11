@@ -6,3 +6,6 @@ qemu_int*.log
 .DS_Store
 *~
 *.swp
+
+# Local, user-supplied OS media - not distributed (see NOTICE).
+bootx64_win10.efi

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /* Minimal 64-bit (X64) UEFI definitions for the fake system table. */
 #ifndef EFI64_H
 #define EFI64_H
