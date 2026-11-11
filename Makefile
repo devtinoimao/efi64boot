@@ -60,7 +60,7 @@ build/trampoline.bin: trampoline.asm
 build/blobs.o: blobs.S build/trampoline.bin build/payload64.bin OVMF64.fd
 	$(CC32) $(CFLAGS32) -c -o $@ $<
 
-build/main.o: main.c efi32.h ovmf64_constants.h ../shared/platform_quirks.h
+build/main.o: main.c efi32.h ovmf64_constants.h shared/platform_quirks.h
 	$(CC32) $(CFLAGS32) -c -o $@ $<
 
 build/efi_crt.o: efi_crt.asm
