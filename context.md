@@ -253,3 +253,15 @@ Real VMware / real Mac hardware still untested.
   ./build paths removed, ISO-based QEMU test commands documented
   (user supplies the ISO), proper compile instructions added.
 - QEMU pc/q35 (and 12 GiB for efi64boot) re-validated after the cleanup.
+
+## 2026-11-12 -- repo moved to the HDD
+
+- Repo now lives at
+  /run/media/abokaborda/HDD Data/Default Project/efi64boot/
+  (old ~/Documents/Default Project/efi64boot is gone). Quote the path --
+  "HDD Data" contains a space. Drive is NTFS via fuseblk; if missing,
+  re-attach/mount it.
+- NTFS mode-change noise silenced with `git config core.fileMode false`;
+  status is clean. Do not commit mode changes.
+- HEAD d168d56 (pushed). Binaries intact: BOOTIA32.EFI 1,988,334 B,
+  OVMF64.fd 1,966,080 B.
